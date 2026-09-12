@@ -77,6 +77,7 @@ bool g_bExpectPresent = false;
 ID3D11RenderTargetView* g_BeforeUiRT = nullptr;
 class CAfxCapture;
 extern CAfxCapture * g_ActiveCapture; // defined with CreateCapture
+static void AfxCapture_LogDiag(const char * msg);
 extern bool g_bInOwnDraw;
 
 namespace {
@@ -861,12 +862,45 @@ private:
             }
 
             if(m_pCpuTexture && pTexture) {
+                // Must not CopyResource from a texture still bound as OM render target.
+                ID3D11RenderTargetView * oldRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+                ID3D11DepthStencilView * oldDSV = nullptr;
+                pContext->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTVs, &oldDSV);
+                pContext->OMSetRenderTargets(0, nullptr, nullptr);
+
+                if(nullptr == m_pIntermediateTexture) {
+                    // Ensure a typed DEFAULT intermediate for typeless/backbuffer copies.
+                    D3D11_TEXTURE2D_DESC srcDesc; pTexture->GetDesc(&srcDesc);
+                    D3D11_TEXTURE2D_DESC midDesc = srcDesc;
+                    midDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                    midDesc.MiscFlags = 0;
+                    midDesc.MipLevels = 1;
+                    midDesc.SampleDesc.Count = 1;
+                    midDesc.SampleDesc.Quality = 0;
+                    midDesc.Usage = D3D11_USAGE_DEFAULT;
+                    midDesc.CPUAccessFlags = 0;
+                    midDesc.Format = m_Format;
+                    m_pCapture->AquireIntermediate(m_pDevice, midDesc);
+                    m_pIntermediateTexture = m_pCapture->m_pIntermediateSurface;
+                }
+
                 if(m_pIntermediateTexture) {
-                    pContext->ResolveSubresource(m_pIntermediateTexture, 0, pTexture, 0, m_Format);
+                    D3D11_TEXTURE2D_DESC srcDesc; pTexture->GetDesc(&srcDesc);
+                    if(1 < srcDesc.SampleDesc.Count) {
+                        pContext->ResolveSubresource(m_pIntermediateTexture, 0, pTexture, 0, m_Format);
+                    } else {
+                        pContext->CopyResource(m_pIntermediateTexture, pTexture);
+                    }
                     pContext->CopyResource(m_pCpuTexture, m_pIntermediateTexture);
                 } else {
                     pContext->CopyResource(m_pCpuTexture, pTexture);
                 }
+
+                pContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRTVs, oldDSV);
+                for(UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
+                    if(oldRTVs[i]) oldRTVs[i]->Release();
+                }
+                if(oldDSV) oldDSV->Release();
             }
         }
 
@@ -1084,14 +1118,28 @@ private:
                             if (nullptr == m_OutVideoStream)
                             {
                                 advancedfx::Warning("AFXERROR: Failed to create image stream for screen recording.\n");
+                                AfxCapture_LogDiag("capture: CreateOutVideoStream FAILED\n");
+                            } else {
+                                AfxCapture_LogDiag("capture: CreateOutVideoStream OK\n");
                             }
                         }
                         if (nullptr != m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, buffer))
                         {
                             advancedfx::Warning("AFXERROR: Failed writing image for screen recording.\n");
+                            AfxCapture_LogDiag("capture: SupplyImageBuffer FAILED\n");
+                        } else if (nullptr != m_OutVideoStream) {
+                            static unsigned s_frames = 0;
+                            s_frames++;
+                            if (s_frames <= 5 || 0 == (s_frames % 120)) {
+                                char buf[64];
+                                _snprintf_s(buf, _TRUNCATE, "capture: frame %u\n", s_frames);
+                                AfxCapture_LogDiag(buf);
+                            }
                         }
                         buffer->Release();
                         buffer = nullptr; 
+                    } else {
+                        AfxCapture_LogDiag("capture: null buffer after Map\n");
                     }                    
                 }
 
@@ -2474,20 +2522,30 @@ static void AfxCapture_LogDiag(const char * msg) {
 static ID3D11Texture2D * AfxCapture_AcquirePresentTexture() {
     ID3D11Texture2D * pTexture = nullptr;
 
-    // Preferred: CSGOHud BeforeUi RT (official HLAE path).
+    // Preferred: CSGOHud BeforeUi RT (official HLAE path), but only when typed.
+    // Under mirv_pov BeforeUi is often R8G8B8A8_TYPELESS and still bound as RTV at
+    // Present — CopyResource then yields no readable frames (no video.avi).
     if(g_BeforeUiRT) {
         ID3D11Resource* pRenderTargetViewResource = nullptr;
         g_BeforeUiRT->GetResource(&pRenderTargetViewResource);
         if(pRenderTargetViewResource) {
-            if(FAILED(pRenderTargetViewResource->QueryInterface(__uuidof(ID3D11Texture2D),(void**)&pTexture))) {
-                pTexture = nullptr;
+            ID3D11Texture2D * pCandidate = nullptr;
+            if(SUCCEEDED(pRenderTargetViewResource->QueryInterface(__uuidof(ID3D11Texture2D),(void**)&pCandidate)) && pCandidate) {
+                D3D11_TEXTURE2D_DESC d; pCandidate->GetDesc(&d);
+                const bool typeless =
+                    d.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS
+                    || d.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+                if(!typeless || nullptr == g_pSwapChain) {
+                    pTexture = pCandidate;
+                } else {
+                    pCandidate->Release();
+                }
             }
             pRenderTargetViewResource->Release();
         }
     }
 
-    // CSDM / WangChuDi mirv_pov: under POV the CSGOHud SetupLightsAndViewConstants
-    // marker that fills g_BeforeUiRT often never runs. Fall back to swapchain backbuffer.
+    // Swapchain backbuffer: reliable at Present for screen-ffmpeg / CSDM mirv_pov.
     if(nullptr == pTexture && g_pSwapChain) {
         if(FAILED(g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pTexture))) {
             pTexture = nullptr;
