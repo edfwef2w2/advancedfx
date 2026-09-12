@@ -1120,7 +1120,12 @@ private:
                                 advancedfx::Warning("AFXERROR: Failed to create image stream for screen recording.\n");
                                 AfxCapture_LogDiag("capture: CreateOutVideoStream FAILED\n");
                             } else {
-                                AfxCapture_LogDiag("capture: CreateOutVideoStream OK\n");
+                                const advancedfx::CImageFormat * fmt = buffer->GetImageBufferFormat();
+                                char obuf[192];
+                                _snprintf_s(obuf, _TRUNCATE,
+                                    "capture: CreateOutVideoStream OK fmt=%u %dx%d pitch=%zu bytes=%zu\n",
+                                    (unsigned)fmt->Format, fmt->Width, fmt->Height, fmt->Pitch, fmt->Bytes);
+                                AfxCapture_LogDiag(obuf);
                             }
                         }
                         if (nullptr != m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, buffer))
