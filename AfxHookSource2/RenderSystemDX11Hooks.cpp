@@ -2513,32 +2513,48 @@ void Before_Present() {
         if(queueReady || g_ActiveCapture) {
             ID3D11Texture2D * pTexture = AfxCapture_AcquirePresentTexture();
 
+            // Context is often cleared by OnAfterPresentOrContextLossReliable before
+            // IDXGISwapChain::Present. OnBeforePresent then drops the queue silently
+            // (Context==null). Under mirv_pov UpdateBuffers may not re-fill Context
+            // before Present — restore ImmediateContext from the texture/device.
+            if(pTexture && nullptr == g_RenderCommands.RenderThread_GetContext()) {
+                ID3D11Device * pDevice = nullptr;
+                pTexture->GetDevice(&pDevice);
+                if(pDevice) {
+                    ID3D11DeviceContext * pImmediate = nullptr;
+                    pDevice->GetImmediateContext(&pImmediate);
+                    if(pImmediate) {
+                        g_RenderCommands.RenderThread_SetContext(pImmediate);
+                        pImmediate->Release();
+                    }
+                    pDevice->Release();
+                }
+            }
+
             {
-                char buf[256];
+                char buf[320];
                 DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
                 if(pTexture) {
                     D3D11_TEXTURE2D_DESC d; pTexture->GetDesc(&d); fmt = d.Format;
                 }
                 _snprintf_s(buf, _TRUNCATE,
-                    "Before_Present queue=%d active=%d beforeUiRT=%d swap=%d tex=%d fmt=%d\n",
+                    "Before_Present queue=%d active=%d beforeUiRT=%d swap=%d tex=%d fmt=%d ctx=%d\n",
                     queueReady ? 1 : 0,
                     g_ActiveCapture ? 1 : 0,
                     g_BeforeUiRT ? 1 : 0,
                     g_pSwapChain ? 1 : 0,
                     pTexture ? 1 : 0,
-                    (int)fmt);
+                    (int)fmt,
+                    g_RenderCommands.RenderThread_GetContext() ? 1 : 0);
                 AfxCapture_LogDiag(buf);
             }
 
             if(pTexture) {
+                ID3D11DeviceContext * pCtx = g_RenderCommands.RenderThread_GetContext();
                 if(queueReady) {
                     pRenderPassCommands->OnBeforePresent(pTexture);
-                } else if(g_ActiveCapture) {
-                    // Direct path: no engine-queued lambda this frame.
-                    ID3D11DeviceContext * pCtx = g_RenderCommands.RenderThread_GetContext();
-                    if(pCtx) {
-                        g_ActiveCapture->OnBeforeGpuPresent(pCtx, pTexture, 1.0f, 0.0f);
-                    }
+                } else if(g_ActiveCapture && pCtx) {
+                    g_ActiveCapture->OnBeforeGpuPresent(pCtx, pTexture, 1.0f, 0.0f);
                 }
                 pTexture->Release();
             }

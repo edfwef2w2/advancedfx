@@ -2331,6 +2331,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 
 				MirvPovKillReward_ApplyHudChatDemoBypass(false);
 
+			// CSDM mirv_pov often ends in ACCESS_VIOLATION before HostStateRequest QUIT.
+			// Finalize screen-ffmpeg here so video.avi can still be closed if any frames were captured.
+			AfxStreams_ShutDown();
+
 			g_CampathDrawer.End();
 
 			g_S2CamIO.ShutDown();
