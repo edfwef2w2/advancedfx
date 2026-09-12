@@ -15,7 +15,21 @@
 
 #include <hlaeFolder.h>
 
+
 namespace advancedfx {
+
+static void AfxFfmpeg_LogDiag(const char * msg)
+{
+	wchar_t path[MAX_PATH];
+	DWORD n = GetTempPathW(MAX_PATH, path);
+	if (0 == n || n >= MAX_PATH) return;
+	wcscat_s(path, L"afx_csdm_capture.log");
+	HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (INVALID_HANDLE_VALUE == h) return;
+	DWORD written = 0;
+	WriteFile(h, msg, (DWORD)strlen(msg), &written, nullptr);
+	CloseHandle(h);
+}
 
 bool COutImageStreamImpl::WriteBuffer(const unsigned char* pBuffer) 
 {
@@ -398,6 +412,15 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 			startupInfo.hStdError = m_hChildStd_ERR_Wr;
 			startupInfo.hStdOutput = m_hChildStd_OUT_Wr;
 
+			{
+				std::string hlaeUtf8, exeUtf8;
+				if (!WideStringToUTF8String(GetHlaeFolderW(), hlaeUtf8)) hlaeUtf8 = "[n/a]";
+				if (!WideStringToUTF8String(ffmpegExe.c_str(), exeUtf8)) exeUtf8 = "[n/a]";
+				char pathBuf[1024];
+				_snprintf_s(pathBuf, _TRUNCATE, "ffmpeg: hlaeFolder=%s exe=%s\n", hlaeUtf8.c_str(), exeUtf8.c_str());
+				AfxFfmpeg_LogDiag(pathBuf);
+			}
+
 			m_Okay = CreateProcessW(
 				ffmpegExe.c_str(),
 				&(commandLine[0]),
@@ -410,10 +433,39 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 				&startupInfo,
 				&m_ProcessInfo
 			);
+			DWORD createGle = GetLastError();
 
 			if (TRUE != m_Okay)
 			{
 				advancedfx::Warning("AFXERROR: COutFFMPEGVideoStream::COutFFMPEGVideoStream: CreateProcessW.\n");
+				char errBuf[128];
+				_snprintf_s(errBuf, _TRUNCATE, "ffmpeg: CreateProcessW failed gle=%lu\n", createGle);
+				AfxFfmpeg_LogDiag(errBuf);
+			}
+			else
+			{
+				// Close our copies of the ends the child inherited so we observe
+				// broken-pipe / EOF correctly while writing stdin.
+				if (INVALID_HANDLE_VALUE != m_hChildStd_IN_Rd && NULL != m_hChildStd_IN_Rd)
+				{
+					CloseHandle(m_hChildStd_IN_Rd);
+					m_hChildStd_IN_Rd = INVALID_HANDLE_VALUE;
+				}
+				if (INVALID_HANDLE_VALUE != m_hChildStd_OUT_Wr && NULL != m_hChildStd_OUT_Wr)
+				{
+					CloseHandle(m_hChildStd_OUT_Wr);
+					m_hChildStd_OUT_Wr = INVALID_HANDLE_VALUE;
+				}
+				if (INVALID_HANDLE_VALUE != m_hChildStd_ERR_Wr && NULL != m_hChildStd_ERR_Wr)
+				{
+					CloseHandle(m_hChildStd_ERR_Wr);
+					m_hChildStd_ERR_Wr = INVALID_HANDLE_VALUE;
+				}
+				char okBuf[256];
+				_snprintf_s(okBuf, _TRUNCATE,
+					"ffmpeg: started ok %dx%d bytes=%zu fps=%.3f\n",
+					imageFormat.Width, imageFormat.Height, imageFormat.Bytes, (double)frameRate);
+				AfxFfmpeg_LogDiag(okBuf);
 			}
 		}
 		if (m_Okay)
@@ -500,51 +552,85 @@ void COutFFMPEGVideoStreamImpl::Close()
 
 bool COutFFMPEGVideoStreamImpl::WriteBuffer(const unsigned char* pBuffer)
 {
-	/*
-	static DWORD frames = 0;
-	static DWORD firstTickCount = GetTickCount();
-
-	++frames;
-	DWORD delta = GetTickCount() - firstTickCount;
-
-	if (1000 < delta)
-	{
-		float fps = delta ? (float)frames / (delta / 1000.0f): 0;
-		advancedfx::Message("FPS: %f\n",fps);
-		frames = 0;
-		firstTickCount = GetTickCount();
-	}
-
-	return true;
-	*/
-
 	if (TRUE != m_Okay) return false;
 
-	//DWORD lastTickCount = GetTickCount();
-
 	DWORD length = (DWORD)m_ImageFormat.Bytes;
-	DWORD srcStride = m_ImageFormat.GetPixelStride();
-	DWORD batchLength = (DWORD)(srcStride * m_ImageFormat.Width);
-	if (batchLength == m_ImageFormat.GetLineStride()) batchLength *= (DWORD)m_ImageFormat.Height;
+	DWORD srcStride = (DWORD)m_ImageFormat.GetPixelStride();
+	if (0 == srcStride || 0 == length)
+	{
+		AfxFfmpeg_LogDiag("ffmpeg: WriteBuffer invalid stride/bytes\n");
+		Close();
+		return false;
+	}
 
-	while (0 < length) {
+	DWORD batchLength = srcStride * (DWORD)m_ImageFormat.Width;
+	if (batchLength == (DWORD)m_ImageFormat.GetLineStride())
+		batchLength *= (DWORD)m_ImageFormat.Height;
+	if (0 == batchLength)
+	{
+		AfxFfmpeg_LogDiag("ffmpeg: WriteBuffer batchLength=0\n");
+		Close();
+		return false;
+	}
 
-		if (WriteFile(m_hChildStd_IN_Wr, (LPCVOID)pBuffer, batchLength, NULL, &m_OverlappedStdin)) {
-			length -= batchLength;
-			pBuffer += batchLength;
+	// Keep each overlapped write modest vs the 1MB stdin pipe buffer.
+	const DWORD kMaxChunk = 256 * 1024;
+
+	while (0 < length)
+	{
+		DWORD toWrite = batchLength;
+		if (toWrite > length) toWrite = length;
+		if (toWrite > kMaxChunk) toWrite = kMaxChunk;
+
+		if (INVALID_HANDLE_VALUE != m_OverlappedStdin.hEvent && NULL != m_OverlappedStdin.hEvent)
+		{
+			ResetEvent(m_OverlappedStdin.hEvent);
+		}
+		m_OverlappedStdin.Offset = 0;
+		m_OverlappedStdin.OffsetHigh = 0;
+		m_OverlappedStdin.Internal = 0;
+		m_OverlappedStdin.InternalHigh = 0;
+
+		DWORD bytesWritten = 0;
+		if (WriteFile(m_hChildStd_IN_Wr, (LPCVOID)pBuffer, toWrite, &bytesWritten, &m_OverlappedStdin))
+		{
+			if (0 == bytesWritten)
+			{
+				if (!GetOverlappedResult(m_hChildStd_IN_Wr, &m_OverlappedStdin, &bytesWritten, FALSE) || 0 == bytesWritten)
+				{
+					char buf[160];
+					_snprintf_s(buf, _TRUNCATE, "ffmpeg: sync WriteFile/GetOverlappedResult failed gle=%lu\n", GetLastError());
+					AfxFfmpeg_LogDiag(buf);
+					Close();
+					return false;
+				}
+			}
+			length -= bytesWritten;
+			pBuffer += bytesWritten;
 			continue;
 		}
 
-		if (ERROR_IO_PENDING != GetLastError()) {
+		DWORD err = GetLastError();
+		if (ERROR_IO_PENDING != err)
+		{
+			char buf[160];
+			_snprintf_s(buf, _TRUNCATE, "ffmpeg: WriteFile failed gle=%lu (toWrite=%lu rem=%lu)\n", err, toWrite, length);
+			AfxFfmpeg_LogDiag(buf);
 			Close();
 			return false;
 		}
 
 		bool completed = false;
-
 		while (!completed)
 		{
-			if (!HandleOutAndErr()) {
+			if (!HandleOutAndErr())
+			{
+				DWORD exitCode = 0;
+				if (m_ProcessInfo.hProcess)
+					GetExitCodeProcess(m_ProcessInfo.hProcess, &exitCode);
+				char buf[160];
+				_snprintf_s(buf, _TRUNCATE, "ffmpeg: exited during stdin write code=%lu rem=%lu\n", exitCode, length);
+				AfxFfmpeg_LogDiag(buf);
 				Close();
 				return false;
 			}
@@ -558,19 +644,28 @@ bool COutFFMPEGVideoStreamImpl::WriteBuffer(const unsigned char* pBuffer)
 			case WAIT_TIMEOUT:
 				break;
 			default:
+				{
+					char buf[160];
+					_snprintf_s(buf, _TRUNCATE, "ffmpeg: WaitForSingleObject failed result=%lu gle=%lu\n", result, GetLastError());
+					AfxFfmpeg_LogDiag(buf);
+				}
 				Close();
 				return false;
 			}
 		}
 
-		DWORD bytesWritten;
-		if (!GetOverlappedResult(m_hChildStd_IN_Wr, &m_OverlappedStdin, &bytesWritten, FALSE) || bytesWritten != length) {
+		bytesWritten = 0;
+		if (!GetOverlappedResult(m_hChildStd_IN_Wr, &m_OverlappedStdin, &bytesWritten, FALSE) || 0 == bytesWritten)
+		{
+			char buf[160];
+			_snprintf_s(buf, _TRUNCATE, "ffmpeg: GetOverlappedResult failed gle=%lu written=%lu expected~%lu\n", GetLastError(), bytesWritten, toWrite);
+			AfxFfmpeg_LogDiag(buf);
 			Close();
 			return false;
 		}
 
-		length -= batchLength;
-		pBuffer += batchLength;
+		length -= bytesWritten;
+		pBuffer += bytesWritten;
 	}
 
 	return true;
@@ -597,6 +692,8 @@ bool COutFFMPEGVideoStreamImpl::HandleOutAndErr(DWORD processWaitTimeOut)
 			{
 				chBuf[dwBytesRead] = 0;
 				advancedfx::Warning("%s", chBuf);
+				AfxFfmpeg_LogDiag(chBuf);
+				if (chBuf[dwBytesRead - 1] != '\n') AfxFfmpeg_LogDiag("\n");
 				bytesAvail -= dwBytesRead;
 			}
 			else

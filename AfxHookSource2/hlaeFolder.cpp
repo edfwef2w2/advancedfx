@@ -29,12 +29,28 @@ void CalculateHlaeFolderOnce()
 		return;
 
 	LPWSTR fileName = 0;
-	HMODULE hm;
+	HMODULE hm = NULL;
 	DWORD length;
 
-	bool bOk =
-		0 != (hm = GetModuleHandleW(DLL_NAME))
-	;
+	// Prefer this module (works for AfxHookSource2.dll and AfxHookSource2.mirv-pov.dll).
+	// Falling back to the classic DLL_NAME keeps older inject layouts working.
+	if (!GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		(LPCWSTR)(void*)&CalculateHlaeFolderOnce,
+		&hm))
+	{
+		hm = NULL;
+	}
+	if (!hm)
+	{
+		hm = GetModuleHandleW(DLL_NAME);
+	}
+	if (!hm)
+	{
+		hm = GetModuleHandleW(L"AfxHookSource2.mirv-pov.dll");
+	}
+
+	bool bOk = (0 != hm);
 
 	if(hm)
 	{

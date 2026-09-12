@@ -1,0 +1,48 @@
+# After forking WangChuDi/advancedfx, GitHub's merge-upstream already pulls
+# WangChuDi into this fork. Keep their sync-upstream.yml (cron + conflict issue).
+#
+# This extra workflow is optional belt-and-suspenders: if merge-upstream is quiet
+# but WangChuDi moved (e.g. only tags), open a tracking issue. Primary path is
+# still sync-upstream.yml + ci.yml publish on push to main.
+name: Watch WangChuDi tip
+
+on:
+  schedule:
+    - cron: "47 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare fork main to WangChuDi/advancedfx main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: WangChuDi/advancedfx
+          ISSUE_TITLE: "WangChuDi tip ahead of fork"
+        run: |
+          ours=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          theirs=$(gh api "repos/${UPSTREAM}/commits/main" --jq .sha)
+          echo "ours=$ours theirs=$theirs"
+          if [[ "$ours" == "$theirs" ]]; then
+            echo "In sync with upstream tip (or identical sha)."
+            # Note: after we add patch commits, SHAs differ even when merged;
+            # merge-base check is the real signal.
+          fi
+          base=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${UPSTREAM}:main...main" --jq .status)
+          # behind | ahead | diverged | identical
+          echo "compare status vs ${UPSTREAM}:main...main => $base"
+          # identical/ahead = fine; behind/diverged => remind to run Sync upstream
+          if [[ "$base" == "behind" || "$base" == "diverged" ]]; then
+            open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "$ISSUE_TITLE in:title" --json number,title \
+              --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" | head -n1)
+            if [[ -z "$open" ]]; then
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" \
+                --body "Fork is $base relative to ${UPSTREAM}@main. Run workflow **Sync upstream** (merge-upstream). If it 409s, resolve the CSDM EndCapture patch conflict, then re-run."
+            fi
+          fi

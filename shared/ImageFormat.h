@@ -91,6 +91,8 @@ public:
 			return 1 * sizeof(unsigned char);
 		case ImageFormat::ZFloat:
 			return 1 * sizeof(float);
+		case ImageFormat::RGBA:
+			return 4 * sizeof(unsigned char);
 		}
 
 		return 0;	
