@@ -75,6 +75,8 @@ bool g_bReShadeCompositeSmoke = true;
 bool g_bCompositeSmoke = false;
 bool g_bExpectPresent = false;
 ID3D11RenderTargetView* g_BeforeUiRT = nullptr;
+class CAfxCapture;
+extern CAfxCapture * g_ActiveCapture; // defined with CreateCapture
 extern bool g_bInOwnDraw;
 
 namespace {
@@ -826,11 +828,26 @@ private:
                 case DXGI_FORMAT_R8G8B8A8_UINT:
                 case DXGI_FORMAT_R8G8B8A8_SNORM:
                 case DXGI_FORMAT_R8G8B8A8_SINT:
-                format = advancedfx::ImageFormat::RGBA;
-                desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-                break;
+                    format = advancedfx::ImageFormat::RGBA;
+                    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                    break;
+                // DXGI swapchain backbuffers are commonly B8G8R8A8_*; without this,
+                // mirv_pov SwapChain GetBuffer capture gets Unknown format and never
+                // creates video.avi (official BeforeUi RT is usually R8G8B8A8).
+                case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+                case DXGI_FORMAT_B8G8R8A8_UNORM:
+                case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                case DXGI_FORMAT_B8G8R8A8_UINT:
+                case DXGI_FORMAT_B8G8R8A8_SNORM:
+                case DXGI_FORMAT_B8G8R8A8_SINT:
+                    format = advancedfx::ImageFormat::BGRA;
+                    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                    break;
                 default:
                     advancedfx::Warning("AFXERROR: GpuCopyResource - unspported DXGI_FORMAT: %i\n",desc.Format);
+                }
+                if(advancedfx::ImageFormat::Unknown == format) {
+                    return;
                 }
                 if(bMultiSampled) {
                     desc.Usage = D3D11_USAGE_DEFAULT;
@@ -2438,6 +2455,49 @@ HRESULT WINAPI New_D3D11CreateDevice(
     return result;
 }
 
+static void AfxCapture_LogDiag(const char * msg) {
+    static DWORD s_lastTick = 0;
+    static unsigned s_count = 0;
+    DWORD now = GetTickCount();
+    if(s_count >= 40 && (now - s_lastTick) < 1000) return;
+    s_lastTick = now;
+    s_count++;
+    wchar_t path[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, path);
+    if(0 == n || n >= MAX_PATH) return;
+    wcscat_s(path, L"afx_csdm_capture.log");
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if(INVALID_HANDLE_VALUE == h) return;
+    DWORD written = 0;
+    WriteFile(h, msg, (DWORD)strlen(msg), &written, nullptr);
+    CloseHandle(h);
+}
+
+static ID3D11Texture2D * AfxCapture_AcquirePresentTexture() {
+    ID3D11Texture2D * pTexture = nullptr;
+
+    // Preferred: CSGOHud BeforeUi RT (official HLAE path).
+    if(g_BeforeUiRT) {
+        ID3D11Resource* pRenderTargetViewResource = nullptr;
+        g_BeforeUiRT->GetResource(&pRenderTargetViewResource);
+        if(pRenderTargetViewResource) {
+            if(FAILED(pRenderTargetViewResource->QueryInterface(__uuidof(ID3D11Texture2D),(void**)&pTexture))) {
+                pTexture = nullptr;
+            }
+            pRenderTargetViewResource->Release();
+        }
+    }
+
+    // CSDM / WangChuDi mirv_pov: under POV the CSGOHud SetupLightsAndViewConstants
+    // marker that fills g_BeforeUiRT often never runs. Fall back to swapchain backbuffer.
+    if(nullptr == pTexture && g_pSwapChain) {
+        if(FAILED(g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pTexture))) {
+            pTexture = nullptr;
+        }
+    }
+    return pTexture;
+}
+
 void Before_Present() {
     g_bInOwnDraw = true;
 
@@ -2449,33 +2509,39 @@ void Before_Present() {
 
     if(auto pRenderPassCommands = g_RenderCommands.RenderThread_GetCommands())
     {
-        if(!pRenderPassCommands->BeforePresent.Empty()) {
-            ID3D11Texture2D * pTexture = nullptr;
+        const bool queueReady = !pRenderPassCommands->BeforePresent.Empty();
+        // If the engine-thread capture queue is empty under mirv_pov timing glitches,
+        // still capture when screen recording is active.
+        if(queueReady || g_ActiveCapture) {
+            ID3D11Texture2D * pTexture = AfxCapture_AcquirePresentTexture();
 
-            // Preferred: CSGOHud BeforeUi RT (official HLAE path).
-            if(g_BeforeUiRT) {
-                ID3D11Resource* pRenderTargetViewResource = nullptr;
-                g_BeforeUiRT->GetResource(&pRenderTargetViewResource);
-                if(pRenderTargetViewResource) {
-                    if(SUCCEEDED(pRenderTargetViewResource->QueryInterface(__uuidof(ID3D11Texture2D),(void**)&pTexture))){
-                        // pTexture AddRef'd by QI
-                    }
-                    pRenderTargetViewResource->Release();
+            {
+                char buf[256];
+                DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+                if(pTexture) {
+                    D3D11_TEXTURE2D_DESC d; pTexture->GetDesc(&d); fmt = d.Format;
                 }
-            }
-
-            // CSDM / WangChuDi mirv_pov: under POV the CSGOHud SetupLightsAndViewConstants
-            // marker that fills g_BeforeUiRT often never runs, so screen-ffmpeg gets zero
-            // frames and never creates video.avi (audio.wav from startmovie still works).
-            // Fall back to the swapchain backbuffer so mirv_streams record screen still captures.
-            if(nullptr == pTexture && g_pSwapChain) {
-                if(FAILED(g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pTexture))) {
-                    pTexture = nullptr;
-                }
+                _snprintf_s(buf, _TRUNCATE,
+                    "Before_Present queue=%d active=%d beforeUiRT=%d swap=%d tex=%d fmt=%d\n",
+                    queueReady ? 1 : 0,
+                    g_ActiveCapture ? 1 : 0,
+                    g_BeforeUiRT ? 1 : 0,
+                    g_pSwapChain ? 1 : 0,
+                    pTexture ? 1 : 0,
+                    (int)fmt);
+                AfxCapture_LogDiag(buf);
             }
 
             if(pTexture) {
-                pRenderPassCommands->OnBeforePresent(pTexture);
+                if(queueReady) {
+                    pRenderPassCommands->OnBeforePresent(pTexture);
+                } else if(g_ActiveCapture) {
+                    // Direct path: no engine-queued lambda this frame.
+                    ID3D11DeviceContext * pCtx = g_RenderCommands.RenderThread_GetContext();
+                    if(pCtx) {
+                        g_ActiveCapture->OnBeforeGpuPresent(pCtx, pTexture, 1.0f, 0.0f);
+                    }
+                }
                 pTexture->Release();
             }
         }
@@ -2484,7 +2550,14 @@ void Before_Present() {
 
 void After_Present() {
     if(auto pRenderPassCommands = g_RenderCommands.RenderThread_GetCommands()) {
+        const bool hadAfter = !pRenderPassCommands->AfterPresent.Empty();
         pRenderPassCommands->OnAfterPresent();
+        // Mirror direct Before_Present capture when engine did not queue AfterPresent.
+        if(!hadAfter && g_ActiveCapture) {
+            if(ID3D11DeviceContext * pCtx = g_RenderCommands.RenderThread_GetContext()) {
+                g_ActiveCapture->OnAfterGpuPresent(pCtx);
+            }
+        }
         pRenderPassCommands->OnAfterPresentOrContextLossReliable();
     }
 

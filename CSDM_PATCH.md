@@ -23,3 +23,8 @@ Under `mirv_pov`, `g_BeforeUiRT` is often never set (missing `CSGOHud`
 `SetupLightsAndViewConstants` marker), so screen capture queued on
 `BeforePresent` never receives a texture → ffmpeg never starts → only
 `audio.wav`. `Before_Present` now falls back to `IDXGISwapChain::GetBuffer(0)`.
+
+## 2026-09-12: BGRA swapchain capture
+- GpuCopyResource now accepts DXGI B8G8R8A8_* as ImageFormat::BGRA (swapchain GetBuffer under mirv_pov).
+- Before_Present captures when g_ActiveCapture is set even if BeforePresent queue is empty.
+- Debug: %TEMP%\afx_csdm_capture.log
