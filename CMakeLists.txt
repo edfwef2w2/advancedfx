@@ -230,12 +230,14 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
         COMPONENT x64-runtime
     )
 
-    install(
-        PROGRAMS
-            "$<TARGET_FILE:AfxHookSource>"
-        DESTINATION "bin/x64"
-        COMPONENT x64-source1
-    )
+    if(NOT AFX_BUILD_SOURCE2_ONLY)
+        install(
+            PROGRAMS
+                "$<TARGET_FILE:AfxHookSource>"
+            DESTINATION "bin/x64"
+            COMPONENT x64-source1
+        )
+    endif()
 
     install(
         PROGRAMS
@@ -244,12 +246,14 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
         COMPONENT x64-source2
     )
 
-    install(
-        FILES
-            "$<TARGET_PDB_FILE:AfxHookSource>"
-        DESTINATION "pdb/x64"
-        COMPONENT x64-source1
-    )
+    if(NOT AFX_BUILD_SOURCE2_ONLY)
+        install(
+            FILES
+                "$<TARGET_PDB_FILE:AfxHookSource>"
+            DESTINATION "pdb/x64"
+            COMPONENT x64-source1
+        )
+    endif()
 
     install(
         FILES
