@@ -412,6 +412,15 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 			startupInfo.hStdError = m_hChildStd_ERR_Wr;
 			startupInfo.hStdOutput = m_hChildStd_OUT_Wr;
 
+			{
+				std::string hlaeUtf8, exeUtf8;
+				if (!WideStringToUTF8String(GetHlaeFolderW(), hlaeUtf8)) hlaeUtf8 = "[n/a]";
+				if (!WideStringToUTF8String(ffmpegExe.c_str(), exeUtf8)) exeUtf8 = "[n/a]";
+				char pathBuf[1024];
+				_snprintf_s(pathBuf, _TRUNCATE, "ffmpeg: hlaeFolder=%s exe=%s\n", hlaeUtf8.c_str(), exeUtf8.c_str());
+				AfxFfmpeg_LogDiag(pathBuf);
+			}
+
 			m_Okay = CreateProcessW(
 				ffmpegExe.c_str(),
 				&(commandLine[0]),
@@ -424,12 +433,13 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 				&startupInfo,
 				&m_ProcessInfo
 			);
+			DWORD createGle = GetLastError();
 
 			if (TRUE != m_Okay)
 			{
 				advancedfx::Warning("AFXERROR: COutFFMPEGVideoStream::COutFFMPEGVideoStream: CreateProcessW.\n");
 				char errBuf[128];
-				_snprintf_s(errBuf, _TRUNCATE, "ffmpeg: CreateProcessW failed gle=%lu\n", GetLastError());
+				_snprintf_s(errBuf, _TRUNCATE, "ffmpeg: CreateProcessW failed gle=%lu\n", createGle);
 				AfxFfmpeg_LogDiag(errBuf);
 			}
 			else
