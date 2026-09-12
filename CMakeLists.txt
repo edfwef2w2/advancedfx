@@ -2,6 +2,10 @@ cmake_minimum_required (VERSION 3.24)
 
 project ("advancedfx")
 
+# CSDM / CI: build only AfxHookSource2 (skip Source1 AfxHookSource and the ALL meta-target deps).
+option(AFX_BUILD_SOURCE2_ONLY "Configure/build CS2 AfxHookSource2 only (skip AfxHookSource)" OFF)
+message(STATUS "AFX_BUILD_SOURCE2_ONLY=${AFX_BUILD_SOURCE2_ONLY}")
+
 # Define CMAKE_CXX_STANDARD otherwise e.g. libprotobuf will have linking problems against ABSL when compiling protobuf:
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
@@ -137,13 +141,21 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
 
     add_subdirectory("deps/release/openexr")
     add_subdirectory("ShaderBuilder")
-    add_subdirectory("AfxHookSource")
+    if(NOT AFX_BUILD_SOURCE2_ONLY)
+        add_subdirectory("AfxHookSource")
+    endif()
     add_subdirectory("AfxHookSource2")
     add_subdirectory("misc/mirv-script/src/snippets")
 
-    add_custom_target(advancedfx ALL
-	    DEPENDS AfxHookSource AfxHookSource2
-    )
+    if(AFX_BUILD_SOURCE2_ONLY)
+        add_custom_target(advancedfx ALL
+            DEPENDS AfxHookSource2
+        )
+    else()
+        add_custom_target(advancedfx ALL
+            DEPENDS AfxHookSource AfxHookSource2
+        )
+    endif()
 endif()
 
 #

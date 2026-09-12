@@ -18,17 +18,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
           node-version: lts/iron
           check-latest: true
-      - uses: MinoruSekine/setup-scoop@v4
-
       - name: Update submodules
         run: git submodule update --init --recursive
-
-      - name: Install gettext
-        run: scoop install gettext
 
       - name: CMake - Configure Source2
         working-directory: "${{github.workspace}}"
@@ -37,7 +34,7 @@ jobs:
           if ("${{ github.event_name }}" -eq "push" -and "${{ github.ref }}" -eq "refs/heads/main") {
             $diagnostics = "ON"
           }
-          cmake --preset x64-release "-DAFX_MIRV_POV_DIAGNOSTICS=$diagnostics"
+          cmake --preset x64-release "-DAFX_MIRV_POV_DIAGNOSTICS=$diagnostics" "-DAFX_BUILD_SOURCE2_ONLY=ON"
 
       - name: CMake - Build Source2
         working-directory: "${{github.workspace}}"
