@@ -77,6 +77,8 @@ jobs:
           $binaryRoot = Join-Path $env:RUNNER_TEMP "AfxHookSource2-$shortSha-windows-x64"
           New-Item -ItemType Directory -Force -Path $binaryRoot | Out-Null
           Copy-Item -LiteralPath $source -Destination (Join-Path $binaryRoot "AfxHookSource2.dll")
+          # CSDM expects the WangChuDi hook filename:
+          Copy-Item -LiteralPath $source -Destination (Join-Path $binaryRoot "AfxHookSource2.mirv-pov.dll")
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "LICENSE") -Destination $binaryRoot
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "NOTICE.md") -Destination $binaryRoot
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "LICENSES") -Destination $binaryRoot -Recurse
@@ -152,7 +154,9 @@ jobs:
 
           {
             printf '## Download\n\n'
-            printf 'Download `%s`, extract it, and use the `AfxHookSource2.dll` file inside.\n\n' "$binary_archive"
+            printf 'Download `%s`, extract it, and use `AfxHookSource2.mirv-pov.dll` (or `AfxHookSource2.dll`).\n\n' "$binary_archive"
+            printf 'This build includes the CSDM sync-EndCapture patch so mirv_pov screen-ffmpeg can finalize video.avi.\n\n'
+
             printf '## Commit\n\n'
             printf '[`%s`](https://github.com/%s/commit/%s)\n\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
             printf '### Commit message\n\n'

@@ -3058,22 +3058,17 @@ void Hook_SceneSystem(void * hModule) {
 
 void EndCapture() {
     if(g_ActiveCapture) {
-        auto & pRenderPassCommands = g_RenderCommands.EngineThread_GetCommands();
-        {
-            auto & queue = pRenderPassCommands.AfterPresentOrContextLossReliable;
-            CAfxCapture * capture = g_ActiveCapture;
-            queue.Push([capture](ID3D11DeviceContext * pDeviceContext){
-                capture->ShutDown(pDeviceContext);
-            }); 
-        }
-        {
-            auto & queue = pRenderPassCommands.FinalizeReliable;
-            CAfxCapture * capture = g_ActiveCapture;
-            queue.Push([capture](){
-                delete capture;
-            }); 
-        }        
+        CAfxCapture * capture = g_ActiveCapture;
         g_ActiveCapture = nullptr;
+
+        // CSDM / WangChuDi mirv_pov: finalize screen-ffmpeg synchronously.
+        // Upstream only queues ShutDown/delete onto AfterPresentOrContextLossReliable
+        // and FinalizeReliable. Under mirv_pov, CS2 often exits with ACCESS_VIOLATION
+        // (0xC0000005) before that Present runs, so ffmpeg never closes and video.avi
+        // is missing while startmovie wav still exists. ShutDown(nullptr) still joins
+        // the processing thread and closes the OutVideoStream (ffmpeg).
+        capture->ShutDown(nullptr);
+        delete capture;
     }
 }
 
