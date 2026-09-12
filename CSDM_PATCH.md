@@ -17,3 +17,9 @@ After a clean upstream merge, CI rebuilds and publishes automatically.
 
 ## License
 `mirv_pov` remains AGPL-3.0-only; each prerelease ships the matching source archive.
+
+## Additional fix (2026-09-12): SwapChain capture fallback
+Under `mirv_pov`, `g_BeforeUiRT` is often never set (missing `CSGOHud`
+`SetupLightsAndViewConstants` marker), so screen capture queued on
+`BeforePresent` never receives a texture → ffmpeg never starts → only
+`audio.wav`. `Before_Present` now falls back to `IDXGISwapChain::GetBuffer(0)`.

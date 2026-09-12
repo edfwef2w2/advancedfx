@@ -2450,19 +2450,33 @@ void Before_Present() {
     if(auto pRenderPassCommands = g_RenderCommands.RenderThread_GetCommands())
     {
         if(!pRenderPassCommands->BeforePresent.Empty()) {
-            ID3D11Resource* pRenderTargetViewResource = nullptr;
+            ID3D11Texture2D * pTexture = nullptr;
+
+            // Preferred: CSGOHud BeforeUi RT (official HLAE path).
             if(g_BeforeUiRT) {
+                ID3D11Resource* pRenderTargetViewResource = nullptr;
                 g_BeforeUiRT->GetResource(&pRenderTargetViewResource);
                 if(pRenderTargetViewResource) {
-                    ID3D11Texture2D * pTexture = nullptr;
                     if(SUCCEEDED(pRenderTargetViewResource->QueryInterface(__uuidof(ID3D11Texture2D),(void**)&pTexture))){
-                        if(pTexture) {
-                            pRenderPassCommands->OnBeforePresent(pTexture);
-                            pTexture->Release();
-                        }
+                        // pTexture AddRef'd by QI
                     }
                     pRenderTargetViewResource->Release();
                 }
+            }
+
+            // CSDM / WangChuDi mirv_pov: under POV the CSGOHud SetupLightsAndViewConstants
+            // marker that fills g_BeforeUiRT often never runs, so screen-ffmpeg gets zero
+            // frames and never creates video.avi (audio.wav from startmovie still works).
+            // Fall back to the swapchain backbuffer so mirv_streams record screen still captures.
+            if(nullptr == pTexture && g_pSwapChain) {
+                if(FAILED(g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pTexture))) {
+                    pTexture = nullptr;
+                }
+            }
+
+            if(pTexture) {
+                pRenderPassCommands->OnBeforePresent(pTexture);
+                pTexture->Release();
             }
         }
     }
