@@ -834,12 +834,10 @@ private:
                 // DXGI swapchain backbuffers are commonly B8G8R8A8_*; without this,
                 // mirv_pov SwapChain GetBuffer capture gets Unknown format and never
                 // creates video.avi (official BeforeUi RT is usually R8G8B8A8).
+                // Only TYPELESS/UNORM/UNORM_SRGB exist for B8G8R8A8 (no UINT/SNORM/SINT).
                 case DXGI_FORMAT_B8G8R8A8_TYPELESS:
                 case DXGI_FORMAT_B8G8R8A8_UNORM:
                 case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-                case DXGI_FORMAT_B8G8R8A8_UINT:
-                case DXGI_FORMAT_B8G8R8A8_SNORM:
-                case DXGI_FORMAT_B8G8R8A8_SINT:
                     format = advancedfx::ImageFormat::BGRA;
                     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
                     break;
